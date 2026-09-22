@@ -1,0 +1,14 @@
+{
+  "name": "telegram-infinity-grid-simulator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram serverless paper-trading bot for Vercel + Upstash Redis",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check api/webhook.js && node --check api/cron.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
