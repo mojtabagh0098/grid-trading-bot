@@ -1,14 +1,19 @@
 {
-  "name": "telegram-infinity-grid-simulator",
-  "version": "1.0.0",
+  "name": "tg-grid-bot-vercel",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Telegram serverless paper-trading bot for Vercel + Upstash Redis",
+  "description": "Telegram grid-trading simulator bot — Vercel serverless functions + Postgres",
+  "engines": { "node": ">=18" },
   "scripts": {
-    "test": "node --test",
-    "check": "node --check api/webhook.js && node --check api/cron.js"
+    "test": "node --test test/",
+    "deploy": "vercel",
+    "deploy:prod": "vercel --prod"
   },
-  "engines": {
-    "node": ">=20"
+  "dependencies": {
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "pg-mem": "^3.0.14"
   }
 }

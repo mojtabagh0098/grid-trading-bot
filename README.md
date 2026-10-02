@@ -1,213 +1,164 @@
-# ربات تلگرامی شبیه‌ساز Infinity Grid
+# tg-grid-bot — ربات تلگرامی شبکه معاملاتی (نسخه Vercel)
 
-یک ربات تلگرامی **Serverless** برای Vercel است که فهرست توکن‌ها و گریدهای شبیه‌سازی را مدیریت می‌کند. اطلاعات پایدار در **Upstash Redis** ذخیره می‌شود؛ بنابراین به VPS یا سرور دائمی نیاز ندارد.
+A Persian-language Telegram bot that runs **simulated grid trading** on selected tokens.
+No server, no exchange keys, no real funds — the whole thing runs on **Vercel** (serverless
+functions) + **Vercel Postgres**.
 
-> **مهم:** این پروژه فقط Paper Trading / شبیه‌سازی است. هیچ کلید API صرافی نمی‌گیرد، هیچ سفارش واقعی ثبت نمی‌کند و نباید مبنای تصمیم سرمایه‌گذاری باشد.
+## Features
 
-## امکانات
+- **Token menu** — add / rename / delete candidate tokens (≤15 per user).
+- **Grid creation** — pick a token, then fill in: deposit (USDT, 10 – 100 000 000),
+  lower price, number of grids (1 – 200) and grid interval (0.1 – 50 %).
+- **Simulated grid trading** — each grid owns a virtual cash + position account.
+  When the price crosses a grid level it buys there; when it rises to the next level
+  it sells and books the profit. Levels form an arithmetic sequence from the lower price.
+- **Candle-based catch-up** — the engine replays real 1-minute candles (Binance → Bybit →
+  OKX fallback) between the last sync and now, so fills happen even if the bot only wakes
+  up occasionally. The replay window is capped (3 days) to fit Vercel function limits.
+- **Grid list with stats** — P/L, ROI %, trade count, live last price; stop & delete grids.
+- **Leveraged positions (long/short)** — you give token + entry price + margin + leverage;
+  the **bot sets TP/SL from ATR(14) of 1h candles (2:1)** and shows them for confirmation.
+  When the price hits TP, SL (or the approximate liquidation level) the position closes
+  automatically, is written to history, and you get a Telegram notification. A
+  **refresh button** shows all open positions with live price, PnL and PnL%;
+  a **history view** lists how each closed position ended. Manual close is two-step.
+- **All in Persian**, with the standard cancel button on every step of a conversation.
 
-- منوی فارسی تلگرام با Inline Button
-- افزودن، مشاهده، ویرایش و حذف توکن‌های Spot با جفت `USDT`
-- اعتبارسنجی توکن و قیمت از Binance Spot عمومی (با fallback به Binance Vision)
-- ساخت گرید با این ورودی‌ها:
-  - نام توکن
-  - `Deposit` برحسب USDT
-  - `Lower price`
-  - `Total grid number` بین ۲ تا ۵۰۰
-  - `Grid interval` درصدی بین ۰.۱ تا ۵۰
-- شبیه‌سازی گرید صعودیِ توسعه‌پذیر (Infinity Grid)
-- نمایش قیمت، ارزش پورتفو، سود/زیان کل، سود تحقق‌یافته، سود/زیان باز، موجودی‌ها، کارمزد شبیه‌سازی، تعداد معامله و ۵ رویداد آخر
-- توقف، شروع مجدد، به‌روزرسانی و حذف گرید
-- محافظت کامل تک‌ادمین با `ADMIN_TELEGRAM_ID`
-- Cron serverless برای به‌روزرسانی دوره‌ای گریدهای فعال
-- بدون هیچ وابستگی npm در زمان اجرا؛ فقط Node.js 20+ و APIهای HTTP
+## Architecture
 
-## منطق دقیق شبیه‌سازی
-
-این بخش را پیش از استفاده بخوانید تا رفتار «Infinity Grid» شفاف باشد:
-
-1. برای هر گرید، مقدار هر tranche برابر `deposit / totalGridNumber` است.
-2. هنگام ساخت، نیمی از ظرفیت گرید به‌صورت فرضی به دارایی پایه در قیمت فعلی تبدیل می‌شود و برای پله‌های فروش بالاتر توزیع می‌گردد؛ مابقی USDT آزاد می‌ماند. کارمزد اولیه هم در PnL منظور می‌شود.
-3. هر بار که قیمت در حرکت نزولی از یک پله عبور کند، ربات یک tranche فرضی می‌خرد؛ آن lot فقط در پلهٔ بعدی بالاتر هدف فروش دارد.
-4. هر بار که قیمت در حرکت صعودی از پلهٔ هدف عبور کند، lot متناظر فروخته و سود/زیان تحقق‌یافته محاسبه می‌شود.
-5. گرید سقف عملیاتی ندارد: پله‌ها با فرمول `lowerPrice × (1 + interval)^n` به سمت بالا توسعه می‌یابند. `totalGridNumber` اندازهٔ tranche و حداکثر lotهای باز را کنترل می‌کند، نه سقف دائمی قیمت.
-6. `Lower price` کف سخت است. زیر آن خرید جدیدی ثبت نمی‌شود و با بازگشت قیمت، موتور دوباره از همان محدوده رصد را آغاز می‌کند.
-7. PnL کل برابر است با `USDT آزاد + ارزش لحظه‌ای توکن − Deposit اولیه`. PnL تحقق‌یافته و PnL باز جداگانه نمایش داده می‌شوند.
-8. کارمزد پیش‌فرض `0.1%` برای هر خرید و فروش است و از متغیر محیطی قابل تغییر است.
-
-چون قیمت بین دو اجرای Cron ممکن است چندین پله بپرد، این یک **شبیه‌ساز تقریبی بر مبنای قیمت‌های مشاهده‌شده** است، نه موتور matching یک صرافی. اگر جهش بسیار بزرگ‌تر از ۱٬۰۰۰ پله رخ دهد، در جزئیات گرید هشدار «پله‌های پردازش‌نشده» ثبت می‌شود.
-
-## معماری
-
-```text
-Telegram update / button
-          │ HTTPS webhook
-          ▼
-Vercel Function: /api/webhook ───► Upstash Redis (tokens, grids, sessions)
-          │
-          └──────────────────────► Binance public Spot API (USDT price)
-
-Vercel Cron: /api/cron ──────────► sync all active grids
+```
+Telegram ──webhook──► /api/webhook  ──► lib/bot.js (router) ──► lib/flow.js (conversations)
+                                              │                        lib/sim.js (grid engine)
+   Vercel Cron (daily) ──► /api/cron ──► syncAllActiveGrids()  lib/grid.js (pure engine)
+                                              │
+                                     Vercel Postgres (pg Pool, plain SQL)
 ```
 
-هیچ پردازش همیشه‌روشن یا سرور خریداری‌شده‌ای وجود ندارد. Function فقط هنگام webhook، بازکردن منو یا Cron اجرا می‌شود.
-
----
-
-## راه‌اندازی رایگان
-
-### 1) ساخت Bot در Telegram
-
-1. در تلگرام به [@BotFather](https://t.me/BotFather) بروید.
-2. دستور `/newbot` را بزنید و نام و username ربات را بسازید.
-3. توکن BotFather را فقط برای متغیر `TELEGRAM_BOT_TOKEN` نگه دارید؛ آن را در Git یا پیام عمومی قرار ندهید.
-4. Telegram numeric user ID خود را با یک ربات اطلاعات کاربر مانند `@userinfobot` دریافت کنید. این مقدار را برای `ADMIN_TELEGRAM_ID` لازم دارید.
-
-### 2) ساخت دیتابیس رایگان Upstash Redis
-
-1. در [Upstash](https://upstash.com/) یک حساب و یک **Redis database** بسازید.
-2. از صفحهٔ دیتابیس، این دو مقدار را کپی کنید:
-   - `UPSTASH_REDIS_REST_URL`
-   - `UPSTASH_REDIS_REST_TOKEN`
-3. داده‌های توکن، گرید و مراحل گفت‌وگوی ربات در همین دیتابیس ذخیره می‌شوند.
-
-### 3) آماده‌سازی کد
-
-```bash
-git clone <YOUR_REPOSITORY_URL>
-cd telegram-infinity-grid-bot
-cp .env.example .env.local
-```
-
-مقادیر نمونه را با مقادیر واقعی جایگزین کنید. برای ساخت دو secret می‌توانید استفاده کنید:
-
-```bash
-openssl rand -hex 32
-```
-
-- `TELEGRAM_WEBHOOK_SECRET`: حداقل ۳۲ کاراکتر تصادفی
-- `CRON_SECRET`: یک مقدار تصادفی متفاوت
-
-### 4) تست منطق محلی
-
-نیازی به نصب پکیج نیست. فقط Node.js 20 یا جدیدتر لازم است:
-
-```bash
-npm test
-npm run check
-```
-
-> اجرای webhook واقعی در محیط local نیازمند tunnel HTTPS است. ساده‌ترین روش، deploy مستقیم روی Vercel است.
-
-### 5) Deploy روی Vercel
-
-1. مخزن را در GitHub/GitLab/Bitbucket push کنید یا از Vercel CLI استفاده کنید.
-2. در [Vercel](https://vercel.com/new) مخزن را import کنید.
-3. در **Project → Settings → Environment Variables** این مقادیر را اضافه کنید:
-
-| Variable | مقدار |
+| Piece | What it is |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | توکن BotFather |
-| `ADMIN_TELEGRAM_ID` | شناسهٔ عددی تلگرام ادمین |
-| `TELEGRAM_WEBHOOK_SECRET` | secret تصادفی اول |
-| `UPSTASH_REDIS_REST_URL` | REST URL از Upstash |
-| `UPSTASH_REDIS_REST_TOKEN` | REST Token از Upstash |
-| `CRON_SECRET` | secret تصادفی دوم |
-| `DEFAULT_FEE_RATE_PCT` | اختیاری؛ پیش‌فرض `0.1` |
+| `api/webhook.js` | Vercel function, POST-only, checks `x-telegram-bot-api-secret-token` vs `WEBHOOK_SECRET`, replies `200` immediately, then handles the update + a light background sync of the sender's due grids. |
+| `api/cron.js` | Vercel function, checks the `Authorization: Bearer <CRON_SECRET>` header (Vercel sends it automatically), syncs **all active grids** (up to 50, 45 s budget) and sweeps **all open positions** for TP/SL hits (up to 60, 30 s budget). |
+| `vercel.json` | Cron schedule `0 12 * * *` (daily — Hobby-plan safe) + `maxDuration: 60` for both functions. |
+| `schema.sql` | Postgres DDL: `users` (+`pending` JSONB for conversations), `tokens`, `grids` (simulation state), `trades`, `positions` (leveraged long/short with TP/SL and close history). |
+| `lib/db.js` | pg Pool from `DATABASE_URL` (SSL on), tiny query helper. |
+| `lib/repo.js` | All SQL in one place (raw `$1…` parameters, no ORM). |
+| `lib/tg.js` | Telegram Bot API over `fetch` (send/edit messages, keyboards). |
+| `lib/prices.js` | 1-minute klines with Binance → Bybit → OKX fallback + ticker. |
+| `lib/grid.js` | **Pure** grid math (levels, sawtooth simulation, metrics) — fully unit-tested, no I/O. |
+| `lib/pos.js` | **Pure** position math: TP/SL from ATR (2:1), PnL/ROE, liquidation price, close detection (liq → SL → TP order), Wilder ATR — no I/O. |
+| `lib/sim.js` | Engine + DB glue: createGrid / syncGrid / syncAllActiveGrids, trade persistence, 20 s fetch budget; positions: openPosition / closePosition / checkUserPositions / syncAllPositions (max 10 open per user). |
+| `lib/bot.js` | Update router (commands + callback_data) and `backgroundSyncForUser`. |
+| `lib/flow.js` | Conversation flows (token add/rename/delete, grid creation) with `pending` JSONB state. |
+| `lib/util.js` | Persian digits, Tehran-timezone formatting, price/duration formatting. |
 
-4. Environment را حداقل برای **Production** انتخاب و Deploy کنید.
-5. URL پروژه را یادداشت کنید؛ مثال:
+### Why only a daily cron?
 
-```text
-https://my-grid-bot.vercel.app
-```
+Vercel's Hobby plan only allows cron jobs with a **daily** schedule, and functions run at most
+60 seconds. The design therefore trades latency for coverage:
 
-با CLI نیز می‌توانید deploy کنید:
+- the **webhook** wakes the bot for every user message and syncs that user's due grids in the background (5-min freshness, ≤5 grids, 20 s budget);
+- the **daily cron** sweeps all active grids once;
+- the **catch-up engine** replays candles from `lastSync`, so at most a few hours of price action are processed per wake — enough for realistic grid fills while staying well inside the function budget.
+
+## Environment variables
+
+| Variable | Where | Purpose |
+|---|---|---|
+| `BOT_TOKEN` | Vercel | Telegram bot token. |
+| `DATABASE_URL` | Vercel | **Pooled** Postgres URL (the one ending in `-pooler`). |
+| `WEBHOOK_SECRET` | Vercel + your webhook URL | Random string; sent by Telegram on every update. |
+| `CRON_SECRET` | Vercel (auto-generated) | Compared against the Bearer header Vercel adds to cron calls. |
+
+A `.env` with these values is used for local runs/tests; `.env` is git-ignored,
+`.env.example` documents the format.
+
+## Local development & tests
 
 ```bash
-npx vercel --prod
+npm install
+npm test            # 50 tests: pure engines + Postgres (pg-mem) + handlers, no network
 ```
 
-### 6) تنظیم Webhook تلگرام
+The test suite:
 
-پس از deploy موفق، این درخواست را در ترمینال اجرا کنید. مقدارها را در همان دستگاه جایگزین کنید و توکن را جایی publish نکنید:
+- verifies the **pure engines** (grid sawtooth, buy/sell, crash, accounting identity,
+  metrics, formatting; position TP/SL, PnL/ROE, liquidation order, ATR);
+- runs the **real `schema.sql`** against an in-memory Postgres (pg-mem) and exercises the
+  full product path: token CRUD, JSONB conversation state, a complete grid-creation
+  conversation (including Persian-digit input), a 3-hour catch-up replay that produces
+  fills and persists trades, grid-list rendering, the full position-creation conversation
+  (TP/SL computed from stubbed 1h ATR), TP/SL/liquidation auto-closes with notifications,
+  manual close, history rendering, the webhook handler (secret check, `/start`,
+  stop-callback) and the cron handler (grids + positions sweep).
 
-```bash
-curl -X POST "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook" \
-  -d "url=https://<YOUR-VERCEL-DOMAIN>/api/webhook" \
-  -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>" \
-  -d "allowed_updates=[\"message\",\"callback_query\"]"
-```
+External HTTP (Telegram, exchanges) is stubbed with a deterministic price series —
+tests never hit the network.
 
-خروجی باید `"ok":true` باشد. برای بررسی وضعیت:
+To run the bot locally against a real DB (e.g. `npx vercel env pull` or a local
+Postgres): set the four env vars, then `node api/webhook.js` is **not** a server —
+for a live local run either deploy to Vercel (recommended) or wrap the handler in any
+small HTTP server of your choice.
 
-```bash
-curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
-```
+## Deployment (Vercel)
 
-حالا به ربات پیام `/start` بفرستید.
+1. **Create the project.** Push this folder to GitHub and import it in Vercel
+   (Framework: *Other* — the `api/` folder becomes serverless functions automatically).
+2. **Create the database.** In the project: *Add Integration → Vercel Postgres*.
+   Use the **pooled** connection string (`...-pooler...`) as `DATABASE_URL`.
+3. **Set env vars** (*Settings → Environment Variables*, all environments):
+   `BOT_TOKEN`, `DATABASE_URL`, `WEBHOOK_SECRET` (any long random string).
+   `CRON_SECRET` is managed by Vercel automatically.
+4. **Apply the schema** (once): *Database → SQL Editor* → paste the contents of
+   `schema.sql` → run. (Or: `psql "$DATABASE_URL" -f schema.sql`.)
+5. **Deploy:**
+   ```bash
+   npm run deploy          # = vercel --prod  (install @vercel/cli + `vercel login` first)
+   ```
+6. **Point Telegram at the webhook:**
+   ```bash
+   ./scripts/setup-webhook.sh <BOT_TOKEN> <https://your-app.vercel.app> <WEBHOOK_SECRET>
+   ```
+   This registers `https://your-app.vercel.app/api/webhook` with `secret_token`.
+7. **Check the cron:** Vercel → project → *Cron Jobs* — one job `0 12 * * *` → `/api/cron`
+   should appear after deploy. You can also trigger it manually by GETting
+   `https://your-app.vercel.app/api/cron` with header `Authorization: Bearer <CRON_SECRET>`.
 
----
+## How a grid works (simulation)
 
-## Cron و دقت شبیه‌سازی
+- Levels: `L_i = lower × (1 + i·iv)` for `i = 0 … count` (arithmetic in price).
+- Each level buys `deposit/count` USDT of the token when the price **crosses it downward**
+  (one fill per level per direction); the position bought at level `i` sells when the
+  price reaches level `i+1` (top level sells at the grid top — the "infinity tail").
+- Profit per round trip ≈ `deposit/count × iv`; fees are not modeled.
+- The account identity always holds: `cash + costBasis = deposit + realized`.
+- Every fill is a `trades` row; the grid list shows total P/L = realized + position value
+  at the latest price.
 
-فایل `vercel.json` به‌طور پیش‌فرض هر ساعت endpoint زیر را فراخوانی می‌کند:
+### How a position works (simulation)
 
-```text
-/api/cron   →   0 * * * *
-```
+- You provide: **token, entry price, margin (USDT), leverage (1–50×), side (long/short)**.
+- **The bot sets TP/SL**: `ATR(14)` over the last 50 1h candles;
+  long → `TP = entry + 2·ATR`, `SL = entry − 1·ATR` (short mirrored). A 2:1 risk:reward.
+  If ATR is unavailable, 3% of entry is used as the fallback distance.
+- PnL: `notional × price-change`, where `notional = margin × leverage`;
+  ROE % is PnL relative to the **margin** (exchange-style).
+- Close events, checked on every wake (webhook background check, refresh button, cron):
+  - `tp` — price crossed the take-profit → closed at TP;
+  - `sl` — price crossed the stop-loss → closed at SL;
+  - `liq` — price reached the approximate liquidation level
+    (`entry × (1 ∓ 0.95/leverage)`), checked **first** because a wide SL can sit beyond it
+    → the whole margin is lost;
+  - `manual` — you close it from the button (two-step confirm, fills at the live price).
+- Every close is persisted (`status='closed'` + reason + PnL) and a Telegram notification
+  is sent. Closes are race-safe: the DB update only wins while the row is still `open`.
 
-هنگامی که `CRON_SECRET` در Vercel تنظیم باشد، Vercel درخواست Cron را با هدر `Authorization: Bearer <CRON_SECRET>` ارسال می‌کند و endpoint عمومی قابل سوءاستفاده نیست.
+## Notes & limits
 
-دقت و کمینهٔ زمان‌بندی Vercel Cron به پلن و سیاست‌های روز Vercel بستگی دارد. اگر پلن رایگان شما اجرای ساعتی را قبول نکرد:
-
-- زمان‌بندی مجاز پلن خود را در `vercel.json` انتخاب کنید و دوباره deploy کنید، **یا**
-- از یک زمان‌بند HTTP رایگان خارجی استفاده کنید که بتواند `GET https://<domain>/api/cron` را با هدر زیر بفرستد:
-
-```text
-Authorization: Bearer <CRON_SECRET>
-```
-
-هرچه اجرای Cron کوتاه‌تر باشد، شبیه‌سازی به عبورهای واقعی پله‌ها نزدیک‌تر است. همچنین هر بار که منوی گریدها یا دکمهٔ refresh را می‌زنید، قیمت‌ها و گریدهای فعال تازه می‌شوند.
-
-## نحوهٔ استفاده در تلگرام
-
-- `/start` یا `/menu`: منوی اصلی
-- `/cancel`: لغو مرحلهٔ در حال انجام
-- **فهرست توکن‌ها**: افزودن نمادهایی مثل `BTC`، `ETH` یا `PEPE`؛ امکان ویرایش/حذف تا قبل از ایجاد گرید وابسته
-- **فهرست گریدها و سود**: نمایش خلاصهٔ تمام گریدها، ساخت گرید جدید، مشاهدهٔ جزئیات، refresh، pause/resume و حذف
-
-برای حفظ تاریخچه، توکنی که گرید وابسته دارد قابل تغییر نام یا حذف نیست؛ ابتدا گریدهای وابسته را حذف کنید.
-
-## نکات امنیتی
-
-- `.env.local` و `.env` در `.gitignore` هستند؛ هرگز secretهای واقعی را commit نکنید.
-- Webhook با `TELEGRAM_WEBHOOK_SECRET` اعتبارسنجی می‌شود.
-- تمام پیام‌ها و دکمه‌ها قبل از اجرا با `ADMIN_TELEGRAM_ID` کنترل می‌شوند؛ کاربران دیگر نادیده گرفته می‌شوند.
-- endpoint Cron بدون `Authorization: Bearer <CRON_SECRET>` پاسخ 401 می‌دهد.
-- این پروژه هیچ کلید API صرافی، seed phrase یا private key نیاز ندارد و **نباید** چنین اطلاعاتی به آن اضافه کنید.
-
-## ساختار پروژه
-
-```text
-api/
-  webhook.js              # Telegram webhook و منوها
-  cron.js                 # همگام‌سازی زمان‌بندی‌شده
-  _lib/
-    simulator.js          # موتور Paper Trading و PnL
-    market.js              # Binance public price API
-    repository.js          # مدل دادهٔ Upstash Redis
-    grid-service.js        # همگام‌سازی گریدها
-    telegram.js            # Telegram Bot API
-    ui.js                  # متن‌ها و دکمه‌های فارسی
-    config.js, redis.js
-test/simulator.test.js    # تست‌های منطق گرید
-vercel.json               # Vercel Function/Cron settings
-```
-
-## محدودیت‌های آگاهانهٔ نسخهٔ اول
-
-- فقط جفت‌های `USDT` در Spot Binance پشتیبانی می‌شوند.
-- این پروژه شبیه‌سازی می‌کند؛ slippage، نقدشوندگی، حداقل اندازه سفارش و candle/tick تاریخی صرافی را مدل نمی‌کند.
-- دریافت قیمت عمومی Binance ممکن است در برخی مناطق یا هنگام اختلال Binance ناموفق شود؛ آخرین دادهٔ ذخیره‌شده در منو نشان داده می‌شود.
-- برای چندکاربره‌کردن، باید namespace داده‌ها با Telegram user ID جدا شود و لایهٔ پرداخت/مجوز طراحی شود؛ این نسخه عمداً تک‌ادمین است.
+- Prices come from public klines (Binance first). If all three exchanges are unreachable
+  (e.g. geo-blocked), syncs simply do nothing until they're reachable again — no errors to users.
+- Max 20 active grids, 15 tokens and 10 open positions per user.
+- Positions are **not** candle-replayed like grids: a limit is only detected when the bot
+  wakes up (message, refresh button, or the daily cron), so a TP/SL that was crossed while
+  the bot slept is filled at the limit price on the next wake — which is the conservative
+  (best-case for TP, worst-case for SL) assumption for a sleeping simulator.
+- The bot never places real orders; all money is virtual.
