@@ -12,7 +12,7 @@ functions) + **Vercel Postgres**.
 - **Simulated grid trading** — each grid owns a virtual cash + position account.
   When the price crosses a grid level it buys there; when it rises to the next level
   it sells and books the profit. Levels form an arithmetic sequence from the lower price.
-- **Candle-based catch-up** — the engine replays real 1-minute candles (Binance → Bybit →
+- **Candle-based catch-up** — the engine replays real 1-minute candles (KuCoin → Binance → Bybit →
   OKX fallback) between the last sync and now, so fills happen even if the bot only wakes
   up occasionally. The replay window is capped (3 days) to fit Vercel function limits.
 - **Grid list with stats** — P/L, ROI %, trade count, live last price; stop & delete grids.
@@ -43,7 +43,7 @@ Telegram ──webhook──► /api/webhook  ──► lib/bot.js (router) ─�
 | `lib/db.js` | pg Pool from `DATABASE_URL` (SSL on), tiny query helper. |
 | `lib/repo.js` | All SQL in one place (raw `$1…` parameters, no ORM). |
 | `lib/tg.js` | Telegram Bot API over `fetch` (send/edit messages, keyboards). |
-| `lib/prices.js` | 1-minute klines with Binance → Bybit → OKX fallback + ticker. |
+| `lib/prices.js` | 1-minute klines with KuCoin → Binance → Bybit → OKX fallback + ticker. |
 | `lib/grid.js` | **Pure** grid math (levels, sawtooth simulation, metrics) — fully unit-tested, no I/O. |
 | `lib/pos.js` | **Pure** position math: TP/SL from ATR (2:1), PnL/ROE, liquidation price, close detection (liq → SL → TP order), Wilder ATR — no I/O. |
 | `lib/sim.js` | Engine + DB glue: createGrid / syncGrid / syncAllActiveGrids, trade persistence, 20 s fetch budget; positions: openPosition / closePosition / checkUserPositions / syncAllPositions (max 10 open per user). |
@@ -162,3 +162,22 @@ small HTTP server of your choice.
   the bot slept is filled at the limit price on the next wake — which is the conservative
   (best-case for TP, worst-case for SL) assumption for a sleeping simulator.
 - The bot never places real orders; all money is virtual.
+
+
+## Live trading on KuCoin (optional, owner only)
+
+By default everything is simulated. To let **grids** trade for real on KuCoin **spot**:
+
+1. Run `migrations/002-live-trading.sql` once on the existing database (new installs: `schema.sql`).
+2. Create a KuCoin API key with **General + Spot Trading** permissions only (no withdrawal/transfer).
+3. Set `OWNER_TG_ID`, `LIVE_TRADING=1`, `KUCOIN_API_KEY`, `KUCOIN_API_SECRET`, `KUCOIN_API_PASSPHRASE`
+   in Vercel and redeploy. Keys live only in environment variables, never in the database.
+4. In Telegram the owner sends `/live` to switch real mode on/off. New grids then place real limit
+   orders (one resting buy per level below the price; after a fill the sell goes one interval higher).
+   `/panic` cancels every resting live order and stops all live grids. Coins already bought stay in the account.
+
+How it works: `lib/kucoin.js` (signed REST client), `lib/live.js` (grid engine using real orders,
+idempotent `clientOid`s written to `live_orders` before sending, per-grid DB lock).
+Fills happen on the exchange; the bot places the follow-up order on its next sync, so call
+`/api/cron` often (an external scheduler such as cron-job.org with the `Authorization: Bearer <CRON_SECRET>`
+header every minute, or a Vercel Pro cron). Leveraged long/short positions stay simulated.

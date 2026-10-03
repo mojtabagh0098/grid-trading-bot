@@ -35,7 +35,9 @@ export default async function handler(req, res) {
 
   const update = req.body;
   if (update && typeof update === 'object' && (update.message || update.callback_query)) {
-    waitUntil(processUpdate(update)); // function stays alive until this finishes
+    const work = processUpdate(update);
+    if (process.env.VERCEL) waitUntil(work); // on Vercel: stay alive until it finishes
+    else await work;                         // locally / in tests: just wait for it
   }
   res.status(200).json({ ok: true });
 }

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS users (
   id         SERIAL PRIMARY KEY,
   tg_id      BIGINT UNIQUE NOT NULL,
   pending    JSONB,
+  live       BOOLEAN NOT NULL DEFAULT FALSE,   -- owner only: new grids trade for REAL on KuCoin
   created_at BIGINT NOT NULL
 );
 
@@ -35,6 +36,8 @@ CREATE TABLE IF NOT EXISTS grids (
   realized     DOUBLE PRECISION NOT NULL DEFAULT 0,
   trade_count  INT NOT NULL DEFAULT 0,
   held_levels  JSONB NOT NULL DEFAULT '[]',
+  live         BOOLEAN NOT NULL DEFAULT FALSE, -- real orders on KuCoin (limit orders per level)
+  live_lock    BIGINT NOT NULL DEFAULT 0,      -- ms timestamp; serialises concurrent syncs of one grid
   created_at   BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_grids_user ON grids (user_id);
@@ -74,3 +77,25 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 CREATE INDEX IF NOT EXISTS idx_pos_user ON positions (user_id, status);
 CREATE INDEX IF NOT EXISTS idx_pos_status ON positions (status);
+
+-- Real KuCoin limit orders placed by live grids (one open order per grid level at a time)
+CREATE TABLE IF NOT EXISTS live_orders (
+  id         SERIAL PRIMARY KEY,
+  grid_id    INT NOT NULL,
+  level      INT NOT NULL,
+  side       TEXT NOT NULL,                       -- 'buy' | 'sell'
+  client_oid TEXT UNIQUE NOT NULL,                -- deterministic -> idempotent placement
+  order_id   TEXT,                                -- KuCoin order id (NULL until accepted)
+  price      DOUBLE PRECISION NOT NULL,
+  size       DOUBLE PRECISION NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'pending',     -- pending | open | filled | canceled | failed
+  buy_funds  DOUBLE PRECISION NOT NULL DEFAULT 0, -- sell rows: USDT cost of the buy being closed
+  buy_size   DOUBLE PRECISION NOT NULL DEFAULT 0,
+  buy_fee    DOUBLE PRECISION NOT NULL DEFAULT 0,
+  deal_size  DOUBLE PRECISION NOT NULL DEFAULT 0,
+  deal_funds DOUBLE PRECISION NOT NULL DEFAULT 0,
+  fee        DOUBLE PRECISION NOT NULL DEFAULT 0,
+  attempts   INT NOT NULL DEFAULT 0,
+  created_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_live_orders_grid ON live_orders (grid_id, status);
