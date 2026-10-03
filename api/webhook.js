@@ -1,10 +1,24 @@
 // api/webhook.js — Telegram webhook endpoint (POST).
-// Acknowledges the update immediately (fast 200 for Telegram), then processes
-// it; Vercel keeps the function alive until the async work finishes (max 60s).
+// Replies 200 to Telegram immediately, but keeps the function ALIVE until the
+// real work finishes using waitUntil (otherwise Vercel freezes the function
+// right after the response is sent and DB connections break).
 
+import { waitUntil } from '@vercel/functions';
 import { handleUpdate, backgroundSyncForUser } from '../lib/bot.js';
 
 export const maxDuration = 60;
+
+async function processUpdate(update) {
+  try {
+    await handleUpdate(update);
+    // keep grids fresh in the background while the user is around
+    if (update.message && update.message.from) {
+      await backgroundSyncForUser(update.message.from.id);
+    }
+  } catch (e) {
+    console.error('update handling failed:', e);
+  }
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -20,16 +34,8 @@ export default async function handler(req, res) {
   }
 
   const update = req.body;
-  res.status(200).json({ ok: true });
-  if (!update || typeof update !== 'object' || (!update.message && !update.callback_query)) return;
-
-  try {
-    await handleUpdate(update);
-    // keep grids fresh in the background while the user is around
-    if (update.message && update.message.from) {
-      await backgroundSyncForUser(update.message.from.id);
-    }
-  } catch (e) {
-    console.error('update handling failed:', e);
+  if (update && typeof update === 'object' && (update.message || update.callback_query)) {
+    waitUntil(processUpdate(update)); // function stays alive until this finishes
   }
+  res.status(200).json({ ok: true });
 }
